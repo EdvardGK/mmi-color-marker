@@ -317,14 +317,14 @@ def main():
             """)
         return
 
-    # Load file and scan psets
-    with tempfile.NamedTemporaryFile(suffix=".ifc", delete=False) as tmp:
-        tmp.write(uploaded.getvalue())
-        tmp_path = tmp.name
-
     # Load IFC file (cached)
     file_key = f"ifc_{uploaded.name}_{uploaded.size}"
     if file_key not in st.session_state:
+        # Only write temp file when loading new file
+        with tempfile.NamedTemporaryFile(suffix=".ifc", delete=False) as tmp:
+            tmp.write(uploaded.getvalue())
+            tmp_path = tmp.name
+
         with st.spinner("Laster IFC-fil..."):
             try:
                 ifc = ifcopenshell.open(tmp_path)
@@ -335,29 +335,40 @@ def main():
             st.session_state["tmp_path"] = tmp_path
     else:
         ifc = st.session_state[file_key]
-        tmp_path = st.session_state.get("tmp_path", tmp_path)
+        tmp_path = st.session_state["tmp_path"]
 
-    # --- Property Selection (lazy loaded) ---
+    # --- Property Selection (lazy loaded with caching) ---
     st.markdown("#### Velg egenskap")
 
-    # Get pset names (fast - just unique names)
-    pset_names = get_pset_names(ifc)
+    # Cache pset names
+    pset_cache_key = f"pset_names_{file_key}"
+    if pset_cache_key not in st.session_state:
+        st.session_state[pset_cache_key] = get_pset_names(ifc)
+    pset_names = st.session_state[pset_cache_key]
+
     selected_pset = st.selectbox("PropertySet", pset_names, label_visibility="collapsed")
 
     selected_prop = None
     selected_value = None
 
     if selected_pset:
-        # Get property names for selected pset
-        prop_names = get_property_names(ifc, selected_pset)
+        # Cache property names per pset
+        prop_cache_key = f"prop_names_{file_key}_{selected_pset}"
+        if prop_cache_key not in st.session_state:
+            st.session_state[prop_cache_key] = get_property_names(ifc, selected_pset)
+        prop_names = st.session_state[prop_cache_key]
 
         col1, col2 = st.columns(2)
         with col1:
             selected_prop = st.selectbox("Egenskap", prop_names, label_visibility="collapsed")
         with col2:
             if selected_prop:
-                # Get values only for selected property (lazy)
-                values = get_property_values(ifc, selected_pset, selected_prop)
+                # Cache values per property
+                val_cache_key = f"prop_values_{file_key}_{selected_pset}_{selected_prop}"
+                if val_cache_key not in st.session_state:
+                    st.session_state[val_cache_key] = get_property_values(ifc, selected_pset, selected_prop)
+                values = st.session_state[val_cache_key]
+
                 value_options = sorted(values.keys(), key=lambda v: -values[v])
                 value_labels = [f"{v} ({values[v]})" for v in value_options]
                 if value_options:
