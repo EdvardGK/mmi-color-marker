@@ -1,13 +1,14 @@
 # MMI 700 Fargelegger
 
-Streamlit app for marking existing elements (MMI=700) in IFC models with metallic colors.
+Streamlit app for marking IFC elements with metallic colors based on property values.
 
 ## Features
 
-- Scans IFC files for elements with `*MMI*` properties set to `700`
+- Browse and select any PropertySet, property, and value from your IFC model
 - Applies metallic surface styling with 9 color options
 - Adds `NOSKI_Eksisterende` property set with marking info
 - Outputs colored IFC with `_farget` suffix
+- Lazy loading for fast performance with large files
 
 ## Installation
 
@@ -20,6 +21,13 @@ pip install -r requirements.txt
 ```bash
 streamlit run app.py
 ```
+
+1. Upload an IFC file
+2. Select PropertySet from dropdown
+3. Select property name
+4. Select value to filter by
+5. Choose a color
+6. Click "Fargelegg" to process
 
 ## Colors
 
@@ -43,6 +51,7 @@ Unusual metallic shades that stand out from typical BIM colors:
 - **Property set**: `NOSKI_Eksisterende` added to each marked element
   - `Info`: Description of marking
   - `Farge`: Selected color name
+  - `Filter`: Property filter used (e.g., `Pset_Name.Property=Value`)
   - `MarkeringsDato`: Date of marking
 
 ## Requirements
