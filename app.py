@@ -71,6 +71,79 @@ def find_mmi_700_elements(ifc_file):
     return matches
 
 
+def scan_psets(ifc_file):
+    """Scan all property sets and their properties with value counts."""
+    psets = {}  # {pset_name: {prop_name: {value: count}}}
+
+    for element in ifc_file.by_type("IfcProduct"):
+        if not hasattr(element, "IsDefinedBy"):
+            continue
+        for rel in element.IsDefinedBy:
+            if not rel.is_a("IfcRelDefinesByProperties"):
+                continue
+            pset = rel.RelatingPropertyDefinition
+            if not pset.is_a("IfcPropertySet"):
+                continue
+
+            pset_name = pset.Name or "Unnamed"
+            if pset_name not in psets:
+                psets[pset_name] = {}
+
+            for prop in pset.HasProperties:
+                if not prop.is_a("IfcPropertySingleValue"):
+                    continue
+                prop_name = prop.Name or ""
+                if prop_name not in psets[pset_name]:
+                    psets[pset_name][prop_name] = {}
+
+                nominal_value = prop.NominalValue
+                if nominal_value is None:
+                    value = "(tom)"
+                else:
+                    value = nominal_value.wrappedValue if hasattr(nominal_value, "wrappedValue") else nominal_value
+                    value = str(value)
+
+                if value not in psets[pset_name][prop_name]:
+                    psets[pset_name][prop_name][value] = 0
+                psets[pset_name][prop_name][value] += 1
+
+    return psets
+
+
+def find_elements_by_property(ifc_file, pset_name, prop_name, prop_value):
+    """Find all elements matching a specific pset/property/value combination."""
+    matches = []
+    for element in ifc_file.by_type("IfcProduct"):
+        if not hasattr(element, "IsDefinedBy"):
+            continue
+        for rel in element.IsDefinedBy:
+            if not rel.is_a("IfcRelDefinesByProperties"):
+                continue
+            pset = rel.RelatingPropertyDefinition
+            if not pset.is_a("IfcPropertySet"):
+                continue
+            if pset.Name != pset_name:
+                continue
+
+            for prop in pset.HasProperties:
+                if not prop.is_a("IfcPropertySingleValue"):
+                    continue
+                if prop.Name != prop_name:
+                    continue
+
+                nominal_value = prop.NominalValue
+                if nominal_value is None:
+                    value = "(tom)"
+                else:
+                    value = nominal_value.wrappedValue if hasattr(nominal_value, "wrappedValue") else nominal_value
+                    value = str(value)
+
+                if value == prop_value:
+                    matches.append((element, prop_name, pset_name))
+
+    return matches
+
+
 def get_or_create_style(ifc_file, color_name, rgb):
     """Get or create a metallic surface style with the given color."""
     style_name = f"{PSET_NAME}_{color_name}"
@@ -138,11 +211,13 @@ def apply_color_to_element(ifc_file, element, style, styled_index):
         return False
 
 
-def add_pset(ifc_file, element, color_name):
+def add_pset(ifc_file, element, color_name, filter_pset=None, filter_prop=None, filter_value=None):
     """Add NOSKI_Eksisterende property set to element."""
+    filter_info = f"{filter_pset}.{filter_prop}={filter_value}" if filter_pset else "MMI=700"
     props = {
-        "Info": f'Objekter er farget med "{color_name}" for å indikere at det er eksisterende.',
+        "Info": f'Farget med "{color_name}" basert på {filter_info}.',
         "Farge": color_name,
+        "Filter": filter_info,
         "MarkeringsDato": datetime.now().strftime("%Y-%m-%d"),
         "Laget av": "Skiplum",
         "Kontaktperson": "Edvard Granskogen Kjørstad",
@@ -204,7 +279,7 @@ def process_ifc(ifc_file, color_name, rgb):
 # =============================================================================
 
 
-@st.dialog("Elementer med MMI=700", width="large")
+@st.dialog("Elementer", width="large")
 def show_preview_dialog(data):
     st.dataframe(pd.DataFrame(data), hide_index=True, height=500)
 
@@ -212,6 +287,17 @@ def show_preview_dialog(data):
 @st.dialog("Resultat - detaljer", width="large")
 def show_results_dialog(data):
     st.dataframe(pd.DataFrame(data), hide_index=True, height=500)
+
+
+@st.dialog("Egenskaper", width="large")
+def show_pset_properties_dialog(pset_name, props):
+    """Show properties and their value counts for a pset."""
+    st.subheader(pset_name)
+    rows = []
+    for prop_name, values in sorted(props.items()):
+        for value, count in sorted(values.items(), key=lambda x: -x[1]):
+            rows.append({"Egenskap": prop_name, "Verdi": value, "Antall": count})
+    st.dataframe(pd.DataFrame(rows), hide_index=True, height=500)
 
 
 # =============================================================================
@@ -287,7 +373,7 @@ def main():
         st.info("Last opp en IFC-fil for å starte")
         with st.expander("ℹ️ Om verktøyet"):
             st.markdown("""
-**Funksjon:** Finner elementer med MMI=700 og markerer dem med valgt farge.
+**Funksjon:** Fargelegg elementer basert på PropertySet-verdier.
 
 **Output:**
 - Farget IFC-fil med suffix `_farget`
@@ -295,13 +381,66 @@ def main():
             """)
         return
 
-    # Color selection
-    st.markdown("#### Velg farge")
-    selected = st.session_state.get("selected_color")
+    # Load file and scan psets
+    with tempfile.NamedTemporaryFile(suffix=".ifc", delete=False) as tmp:
+        tmp.write(uploaded.getvalue())
+        tmp_path = tmp.name
 
-    # Clear invalid color selection (from previous session with different colors)
-    if selected and selected not in COLORS:
-        selected = None
+    cache_key = f"psets_{uploaded.name}_{uploaded.size}"
+    if cache_key not in st.session_state:
+        with st.spinner("Skanner PropertySets..."):
+            try:
+                ifc = ifcopenshell.open(tmp_path)
+            except Exception as e:
+                st.error(f"Kunne ikke lese IFC-fil: {e}")
+                return
+            psets_data = scan_psets(ifc)
+            st.session_state[cache_key] = psets_data
+            st.session_state["tmp_path"] = tmp_path
+    else:
+        psets_data = st.session_state[cache_key]
+        tmp_path = st.session_state.get("tmp_path", tmp_path)
+
+    # --- Property Selection ---
+    st.markdown("#### Velg egenskap")
+
+    # Pset selector with info button
+    pset_names = sorted(psets_data.keys())
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        selected_pset = st.selectbox("PropertySet", pset_names, label_visibility="collapsed")
+    with col2:
+        if st.button("📋", help="Vis alle egenskaper"):
+            show_pset_properties_dialog(selected_pset, psets_data[selected_pset])
+
+    # Property and value selectors
+    if selected_pset:
+        props = psets_data[selected_pset]
+        prop_names = sorted(props.keys())
+
+        col1, col2 = st.columns(2)
+        with col1:
+            selected_prop = st.selectbox("Egenskap", prop_names, label_visibility="collapsed")
+        with col2:
+            if selected_prop:
+                values = props[selected_prop]
+                # Sort by count descending, show count in label
+                value_options = sorted(values.keys(), key=lambda v: -values[v])
+                value_labels = [f"{v} ({values[v]})" for v in value_options]
+                selected_idx = st.selectbox("Verdi", range(len(value_options)),
+                                           format_func=lambda i: value_labels[i],
+                                           label_visibility="collapsed")
+                selected_value = value_options[selected_idx] if value_options else None
+            else:
+                selected_value = None
+
+    # --- Color Selection ---
+    st.markdown("#### Velg farge")
+    selected_color = st.session_state.get("selected_color")
+
+    # Clear invalid color selection
+    if selected_color and selected_color not in COLORS:
+        selected_color = None
         st.session_state.selected_color = None
 
     # Render color buttons (3x3 grid)
@@ -318,11 +457,11 @@ def main():
                     st.session_state.selected_color = name
                     st.rerun()
 
-    # Inject JS to color the buttons (runs after buttons are rendered)
+    # Inject JS to color the buttons
     color_js = "const colorMap = {"
     for name, rgb_val in COLORS.items():
         hex_color = f"#{int(rgb_val[0]*255):02x}{int(rgb_val[1]*255):02x}{int(rgb_val[2]*255):02x}"
-        is_selected = selected == name
+        is_selected = selected_color == name
         border = "3px solid #333" if is_selected else "none"
         color_js += f'"{name}": {{hex: "{hex_color}", selected: {str(is_selected).lower()}, border: "{border}"}},'
     color_js += "};"
@@ -351,32 +490,20 @@ def main():
     </script>
     """, height=0)
 
-    if not selected:
+    if not selected_color or not selected_value:
         return
 
-    rgb = COLORS[selected]
+    rgb = COLORS[selected_color]
 
-    # Load and scan with progress
-    with tempfile.NamedTemporaryFile(suffix=".ifc", delete=False) as tmp:
-        tmp.write(uploaded.getvalue())
-        tmp_path = tmp.name
-
-    # Check if we need to scan (cache results in session state)
-    cache_key = f"scan_{uploaded.name}_{uploaded.size}"
-    if cache_key not in st.session_state:
-        with st.spinner("Leser IFC-fil og søker etter MMI=700..."):
-            try:
-                ifc = ifcopenshell.open(tmp_path)
-            except Exception as e:
-                st.error(f"Kunne ikke lese IFC-fil: {e}")
-                return
-
-            matches = find_mmi_700_elements(ifc)
-            st.session_state[cache_key] = matches
-            st.session_state["tmp_path"] = tmp_path
+    # Find matching elements
+    matches_key = f"matches_{selected_pset}_{selected_prop}_{selected_value}"
+    if matches_key not in st.session_state:
+        with st.spinner("Søker etter elementer..."):
+            ifc = ifcopenshell.open(tmp_path)
+            matches = find_elements_by_property(ifc, selected_pset, selected_prop, selected_value)
+            st.session_state[matches_key] = matches
     else:
-        matches = st.session_state[cache_key]
-        tmp_path = st.session_state.get("tmp_path", tmp_path)
+        matches = st.session_state[matches_key]
 
     unique_guids = set(m[0].GlobalId for m in matches)
 
@@ -395,12 +522,12 @@ def main():
         st.markdown(f'''
         <div class="summary-card" style="border-left-color: {hex_color};">
             <h4>Valgt farge</h4>
-            <div class="value" style="color: {hex_color};">{selected}</div>
+            <div class="value" style="color: {hex_color};">{selected_color}</div>
         </div>
         ''', unsafe_allow_html=True)
 
     if not unique_guids:
-        st.warning("Ingen elementer med MMI=700 funnet i filen.")
+        st.warning(f"Ingen elementer funnet med {selected_pset}.{selected_prop}={selected_value}")
         return
 
     # Preview button
@@ -430,7 +557,7 @@ def main():
         progress_bar.progress(15, text="Oppretter fargestil...")
 
         # Create style
-        style = get_or_create_style(ifc, selected, rgb)
+        style = get_or_create_style(ifc, selected_color, rgb)
         progress_bar.progress(20, text="Indekserer eksisterende stiler...")
 
         # Build styled item index for fast lookup
@@ -448,7 +575,7 @@ def main():
             processed.add(element.GlobalId)
 
             colored = apply_color_to_element(ifc, element, style, styled_index)
-            add_pset(ifc, element, selected)
+            add_pset(ifc, element, selected_color, selected_pset, selected_prop, selected_value)
 
             if colored:
                 results["colored"] += 1
