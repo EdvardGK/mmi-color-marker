@@ -41,73 +41,51 @@ PSET_NAME = "NOSKI_Eksisterende"
 # =============================================================================
 
 
-def find_mmi_700_elements(ifc_file):
-    """Find all elements with property containing 'MMI' in name and value 700."""
-    matches = []
-    for element in ifc_file.by_type("IfcProduct"):
-        if not hasattr(element, "IsDefinedBy"):
+def get_pset_names(ifc_file):
+    """Get list of unique property set names (fast)."""
+    names = set()
+    for pset in ifc_file.by_type("IfcPropertySet"):
+        if pset.Name:
+            names.add(pset.Name)
+    return sorted(names)
+
+
+def get_property_names(ifc_file, pset_name):
+    """Get list of property names for a specific pset (fast)."""
+    names = set()
+    for pset in ifc_file.by_type("IfcPropertySet"):
+        if pset.Name != pset_name:
             continue
-        for rel in element.IsDefinedBy:
-            if not rel.is_a("IfcRelDefinesByProperties"):
+        for prop in pset.HasProperties:
+            if prop.is_a("IfcPropertySingleValue") and prop.Name:
+                names.add(prop.Name)
+    return sorted(names)
+
+
+def get_property_values(ifc_file, pset_name, prop_name):
+    """Get value counts for a specific property (lazy load)."""
+    values = {}
+    for pset in ifc_file.by_type("IfcPropertySet"):
+        if pset.Name != pset_name:
+            continue
+        for prop in pset.HasProperties:
+            if not prop.is_a("IfcPropertySingleValue"):
                 continue
-            pset = rel.RelatingPropertyDefinition
-            if not pset.is_a("IfcPropertySet"):
+            if prop.Name != prop_name:
                 continue
-            for prop in pset.HasProperties:
-                if not prop.is_a("IfcPropertySingleValue"):
-                    continue
-                prop_name = prop.Name or ""
-                if "MMI" not in prop_name.upper():
-                    continue
-                nominal_value = prop.NominalValue
-                if nominal_value is None:
-                    continue
+
+            nominal_value = prop.NominalValue
+            if nominal_value is None:
+                value = "Ingen verdi"
+            else:
                 value = nominal_value.wrappedValue if hasattr(nominal_value, "wrappedValue") else nominal_value
-                try:
-                    if str(value) == "700" or int(value) == 700:
-                        matches.append((element, prop_name, pset.Name))
-                except (ValueError, TypeError):
-                    continue
-    return matches
+                value = str(value) if value else "Ingen verdi"
 
+            if value not in values:
+                values[value] = 0
+            values[value] += 1
 
-def scan_psets(ifc_file):
-    """Scan all property sets and their properties with value counts."""
-    psets = {}  # {pset_name: {prop_name: {value: count}}}
-
-    for element in ifc_file.by_type("IfcProduct"):
-        if not hasattr(element, "IsDefinedBy"):
-            continue
-        for rel in element.IsDefinedBy:
-            if not rel.is_a("IfcRelDefinesByProperties"):
-                continue
-            pset = rel.RelatingPropertyDefinition
-            if not pset.is_a("IfcPropertySet"):
-                continue
-
-            pset_name = pset.Name or "Unnamed"
-            if pset_name not in psets:
-                psets[pset_name] = {}
-
-            for prop in pset.HasProperties:
-                if not prop.is_a("IfcPropertySingleValue"):
-                    continue
-                prop_name = prop.Name or ""
-                if prop_name not in psets[pset_name]:
-                    psets[pset_name][prop_name] = {}
-
-                nominal_value = prop.NominalValue
-                if nominal_value is None:
-                    value = "(tom)"
-                else:
-                    value = nominal_value.wrappedValue if hasattr(nominal_value, "wrappedValue") else nominal_value
-                    value = str(value)
-
-                if value not in psets[pset_name][prop_name]:
-                    psets[pset_name][prop_name][value] = 0
-                psets[pset_name][prop_name][value] += 1
-
-    return psets
+    return values
 
 
 def find_elements_by_property(ifc_file, pset_name, prop_name, prop_value):
@@ -133,10 +111,10 @@ def find_elements_by_property(ifc_file, pset_name, prop_name, prop_value):
 
                 nominal_value = prop.NominalValue
                 if nominal_value is None:
-                    value = "(tom)"
+                    value = "Ingen verdi"
                 else:
                     value = nominal_value.wrappedValue if hasattr(nominal_value, "wrappedValue") else nominal_value
-                    value = str(value)
+                    value = str(value) if value else "Ingen verdi"
 
                 if value == prop_value:
                     matches.append((element, prop_name, pset_name))
@@ -243,37 +221,6 @@ def add_pset(ifc_file, element, color_name, filter_pset=None, filter_prop=None, 
     return False
 
 
-def process_ifc(ifc_file, color_name, rgb):
-    """Process IFC: find MMI=700 elements, apply color, add pset."""
-    matches = find_mmi_700_elements(ifc_file)
-    if not matches:
-        return {"total": 0, "colored": 0, "elements": []}
-
-    style = get_or_create_style(ifc_file, color_name, rgb)
-    results = {"total": len(set(m[0].GlobalId for m in matches)), "colored": 0, "elements": []}
-    processed = set()
-
-    for element, prop_name, pset_name in matches:
-        if element.GlobalId in processed:
-            continue
-        processed.add(element.GlobalId)
-
-        colored = apply_color_to_element(ifc_file, element, style)
-        add_pset(ifc_file, element, color_name)
-
-        if colored:
-            results["colored"] += 1
-        results["elements"].append({
-            "GUID": element.GlobalId,
-            "Type": element.is_a(),
-            "Navn": element.Name or "-",
-            "Egenskap": prop_name,
-            "Farget": "OK" if colored else "Feilet",
-        })
-
-    return results
-
-
 # =============================================================================
 # DIALOGS
 # =============================================================================
@@ -287,17 +234,6 @@ def show_preview_dialog(data):
 @st.dialog("Resultat - detaljer", width="large")
 def show_results_dialog(data):
     st.dataframe(pd.DataFrame(data), hide_index=True, height=500)
-
-
-@st.dialog("Egenskaper", width="large")
-def show_pset_properties_dialog(pset_name, props):
-    """Show properties and their value counts for a pset."""
-    st.subheader(pset_name)
-    rows = []
-    for prop_name, values in sorted(props.items()):
-        for value, count in sorted(values.items(), key=lambda x: -x[1]):
-            rows.append({"Egenskap": prop_name, "Verdi": value, "Antall": count})
-    st.dataframe(pd.DataFrame(rows), hide_index=True, height=500)
 
 
 # =============================================================================
@@ -386,53 +322,49 @@ def main():
         tmp.write(uploaded.getvalue())
         tmp_path = tmp.name
 
-    cache_key = f"psets_{uploaded.name}_{uploaded.size}"
-    if cache_key not in st.session_state:
-        with st.spinner("Skanner PropertySets..."):
+    # Load IFC file (cached)
+    file_key = f"ifc_{uploaded.name}_{uploaded.size}"
+    if file_key not in st.session_state:
+        with st.spinner("Laster IFC-fil..."):
             try:
                 ifc = ifcopenshell.open(tmp_path)
             except Exception as e:
                 st.error(f"Kunne ikke lese IFC-fil: {e}")
                 return
-            psets_data = scan_psets(ifc)
-            st.session_state[cache_key] = psets_data
+            st.session_state[file_key] = ifc
             st.session_state["tmp_path"] = tmp_path
     else:
-        psets_data = st.session_state[cache_key]
+        ifc = st.session_state[file_key]
         tmp_path = st.session_state.get("tmp_path", tmp_path)
 
-    # --- Property Selection ---
+    # --- Property Selection (lazy loaded) ---
     st.markdown("#### Velg egenskap")
 
-    # Pset selector with info button
-    pset_names = sorted(psets_data.keys())
-    col1, col2 = st.columns([4, 1])
-    with col1:
-        selected_pset = st.selectbox("PropertySet", pset_names, label_visibility="collapsed")
-    with col2:
-        if st.button("📋", help="Vis alle egenskaper"):
-            show_pset_properties_dialog(selected_pset, psets_data[selected_pset])
+    # Get pset names (fast - just unique names)
+    pset_names = get_pset_names(ifc)
+    selected_pset = st.selectbox("PropertySet", pset_names, label_visibility="collapsed")
 
-    # Property and value selectors
+    selected_prop = None
+    selected_value = None
+
     if selected_pset:
-        props = psets_data[selected_pset]
-        prop_names = sorted(props.keys())
+        # Get property names for selected pset
+        prop_names = get_property_names(ifc, selected_pset)
 
         col1, col2 = st.columns(2)
         with col1:
             selected_prop = st.selectbox("Egenskap", prop_names, label_visibility="collapsed")
         with col2:
             if selected_prop:
-                values = props[selected_prop]
-                # Sort by count descending, show count in label
+                # Get values only for selected property (lazy)
+                values = get_property_values(ifc, selected_pset, selected_prop)
                 value_options = sorted(values.keys(), key=lambda v: -values[v])
                 value_labels = [f"{v} ({values[v]})" for v in value_options]
-                selected_idx = st.selectbox("Verdi", range(len(value_options)),
-                                           format_func=lambda i: value_labels[i],
-                                           label_visibility="collapsed")
-                selected_value = value_options[selected_idx] if value_options else None
-            else:
-                selected_value = None
+                if value_options:
+                    selected_idx = st.selectbox("Verdi", range(len(value_options)),
+                                               format_func=lambda i: value_labels[i],
+                                               label_visibility="collapsed")
+                    selected_value = value_options[selected_idx]
 
     # --- Color Selection ---
     st.markdown("#### Velg farge")
@@ -495,11 +427,11 @@ def main():
 
     rgb = COLORS[selected_color]
 
-    # Find matching elements
+    # Find matching elements (use cached IFC if available)
     matches_key = f"matches_{selected_pset}_{selected_prop}_{selected_value}"
     if matches_key not in st.session_state:
         with st.spinner("Søker etter elementer..."):
-            ifc = ifcopenshell.open(tmp_path)
+            ifc = st.session_state.get("ifc_file") or ifcopenshell.open(tmp_path)
             matches = find_elements_by_property(ifc, selected_pset, selected_prop, selected_value)
             st.session_state[matches_key] = matches
     else:
