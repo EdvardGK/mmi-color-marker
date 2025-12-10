@@ -41,38 +41,31 @@ PSET_NAME = "NOSKI_Eksisterende"
 # =============================================================================
 
 
-def get_pset_names(ifc_file):
-    """Get list of unique property set names (fast)."""
-    names = set()
-    for pset in ifc_file.by_type("IfcPropertySet"):
-        if pset.Name:
-            names.add(pset.Name)
-    return sorted(names)
+def build_pset_index(ifc_file):
+    """Build index of psets attached to elements (one-time scan)."""
+    # Structure: {pset_name: {prop_name: {value: count}}}
+    index = {}
 
-
-def get_property_names(ifc_file, pset_name):
-    """Get list of property names for a specific pset (fast)."""
-    names = set()
-    for pset in ifc_file.by_type("IfcPropertySet"):
-        if pset.Name != pset_name:
+    for rel in ifc_file.by_type("IfcRelDefinesByProperties"):
+        # Skip if not attached to any IfcProduct (element)
+        if not any(obj.is_a("IfcProduct") for obj in rel.RelatedObjects):
             continue
-        for prop in pset.HasProperties:
-            if prop.is_a("IfcPropertySingleValue") and prop.Name:
-                names.add(prop.Name)
-    return sorted(names)
 
-
-def get_property_values(ifc_file, pset_name, prop_name):
-    """Get value counts for a specific property (lazy load)."""
-    values = {}
-    for pset in ifc_file.by_type("IfcPropertySet"):
-        if pset.Name != pset_name:
+        pset = rel.RelatingPropertyDefinition
+        if not pset.is_a("IfcPropertySet") or not pset.Name:
             continue
+
+        pset_name = pset.Name
+        if pset_name not in index:
+            index[pset_name] = {}
+
         for prop in pset.HasProperties:
-            if not prop.is_a("IfcPropertySingleValue"):
+            if not prop.is_a("IfcPropertySingleValue") or not prop.Name:
                 continue
-            if prop.Name != prop_name:
-                continue
+
+            prop_name = prop.Name
+            if prop_name not in index[pset_name]:
+                index[pset_name][prop_name] = {}
 
             nominal_value = prop.NominalValue
             if nominal_value is None:
@@ -81,11 +74,11 @@ def get_property_values(ifc_file, pset_name, prop_name):
                 value = nominal_value.wrappedValue if hasattr(nominal_value, "wrappedValue") else nominal_value
                 value = str(value) if value else "Ingen verdi"
 
-            if value not in values:
-                values[value] = 0
-            values[value] += 1
+            if value not in index[pset_name][prop_name]:
+                index[pset_name][prop_name][value] = 0
+            index[pset_name][prop_name][value] += 1
 
-    return values
+    return index
 
 
 def find_elements_by_property(ifc_file, pset_name, prop_name, prop_value):
@@ -337,38 +330,31 @@ def main():
         ifc = st.session_state[file_key]
         tmp_path = st.session_state["tmp_path"]
 
-    # --- Property Selection (lazy loaded with caching) ---
+    # --- Property Selection (single scan, cached index) ---
     st.markdown("#### Velg egenskap")
 
-    # Cache pset names
-    pset_cache_key = f"pset_names_{file_key}"
-    if pset_cache_key not in st.session_state:
-        st.session_state[pset_cache_key] = get_pset_names(ifc)
-    pset_names = st.session_state[pset_cache_key]
+    # Build index once per file
+    index_key = f"pset_index_{file_key}"
+    if index_key not in st.session_state:
+        with st.spinner("Indekserer egenskaper..."):
+            st.session_state[index_key] = build_pset_index(ifc)
+    pset_index = st.session_state[index_key]
 
+    pset_names = sorted(pset_index.keys())
     selected_pset = st.selectbox("PropertySet", pset_names, label_visibility="collapsed")
 
     selected_prop = None
     selected_value = None
 
     if selected_pset:
-        # Cache property names per pset
-        prop_cache_key = f"prop_names_{file_key}_{selected_pset}"
-        if prop_cache_key not in st.session_state:
-            st.session_state[prop_cache_key] = get_property_names(ifc, selected_pset)
-        prop_names = st.session_state[prop_cache_key]
+        prop_names = sorted(pset_index[selected_pset].keys())
 
         col1, col2 = st.columns(2)
         with col1:
             selected_prop = st.selectbox("Egenskap", prop_names, label_visibility="collapsed")
         with col2:
             if selected_prop:
-                # Cache values per property
-                val_cache_key = f"prop_values_{file_key}_{selected_pset}_{selected_prop}"
-                if val_cache_key not in st.session_state:
-                    st.session_state[val_cache_key] = get_property_values(ifc, selected_pset, selected_prop)
-                values = st.session_state[val_cache_key]
-
+                values = pset_index[selected_pset][selected_prop]
                 value_options = sorted(values.keys(), key=lambda v: -values[v])
                 value_labels = [f"{v} ({values[v]})" for v in value_options]
                 if value_options:
