@@ -81,6 +81,16 @@ def build_pset_index(ifc_file):
     return index
 
 
+def find_all_products(ifc_file):
+    """Return all IfcProducts that carry a geometric representation."""
+    matches = []
+    for element in ifc_file.by_type("IfcProduct"):
+        if getattr(element, "Representation", None) is None:
+            continue
+        matches.append((element, None, None))
+    return matches
+
+
 def find_elements_by_property(ifc_file, pset_name, prop_name, prop_value):
     """Find all elements matching a specific pset/property/value combination."""
     matches = []
@@ -184,7 +194,7 @@ def apply_color_to_element(ifc_file, element, style, styled_index):
 
 def add_pset(ifc_file, element, color_name, filter_pset=None, filter_prop=None, filter_value=None):
     """Add NOSKI_Eksisterende property set to element."""
-    filter_info = f"{filter_pset}.{filter_prop}={filter_value}" if filter_pset else "MMI=700"
+    filter_info = f"{filter_pset}.{filter_prop}={filter_value}" if filter_pset else "Alle IfcProducts"
     props = {
         "Info": f'Farget med "{color_name}" basert på {filter_info}.',
         "Farge": color_name,
@@ -302,7 +312,7 @@ def main():
         st.info("Last opp en IFC-fil for å starte")
         with st.expander("ℹ️ Om verktøyet"):
             st.markdown("""
-**Funksjon:** Fargelegg elementer basert på PropertySet-verdier.
+**Funksjon:** Fargelegg elementer basert på PropertySet-verdier, eller fargelegg alle IfcProducts med geometri.
 
 **Output:**
 - Farget IFC-fil med suffix `_farget`
@@ -330,38 +340,43 @@ def main():
         ifc = st.session_state[file_key]
         tmp_path = st.session_state["tmp_path"]
 
-    # --- Property Selection (single scan, cached index) ---
-    st.markdown("#### Velg egenskap")
+    # --- Selection mode ---
+    color_all = st.checkbox("Fargelegg alle IfcProducts (ingen egenskapsfilter)")
 
-    # Build index once per file
-    index_key = f"pset_index_{file_key}"
-    if index_key not in st.session_state:
-        with st.spinner("Indekserer egenskaper..."):
-            st.session_state[index_key] = build_pset_index(ifc)
-    pset_index = st.session_state[index_key]
-
-    pset_names = sorted(pset_index.keys())
-    selected_pset = st.selectbox("PropertySet", pset_names, label_visibility="collapsed")
-
+    selected_pset = None
     selected_prop = None
     selected_value = None
 
-    if selected_pset:
-        prop_names = sorted(pset_index[selected_pset].keys())
+    if not color_all:
+        # --- Property Selection (single scan, cached index) ---
+        st.markdown("#### Velg egenskap")
 
-        col1, col2 = st.columns(2)
-        with col1:
-            selected_prop = st.selectbox("Egenskap", prop_names, label_visibility="collapsed")
-        with col2:
-            if selected_prop:
-                values = pset_index[selected_pset][selected_prop]
-                value_options = sorted(values.keys(), key=lambda v: -values[v])
-                value_labels = [f"{v} ({values[v]})" for v in value_options]
-                if value_options:
-                    selected_idx = st.selectbox("Verdi", range(len(value_options)),
-                                               format_func=lambda i: value_labels[i],
-                                               label_visibility="collapsed")
-                    selected_value = value_options[selected_idx]
+        # Build index once per file
+        index_key = f"pset_index_{file_key}"
+        if index_key not in st.session_state:
+            with st.spinner("Indekserer egenskaper..."):
+                st.session_state[index_key] = build_pset_index(ifc)
+        pset_index = st.session_state[index_key]
+
+        pset_names = sorted(pset_index.keys())
+        selected_pset = st.selectbox("PropertySet", pset_names, label_visibility="collapsed")
+
+        if selected_pset:
+            prop_names = sorted(pset_index[selected_pset].keys())
+
+            col1, col2 = st.columns(2)
+            with col1:
+                selected_prop = st.selectbox("Egenskap", prop_names, label_visibility="collapsed")
+            with col2:
+                if selected_prop:
+                    values = pset_index[selected_pset][selected_prop]
+                    value_options = sorted(values.keys(), key=lambda v: -values[v])
+                    value_labels = [f"{v} ({values[v]})" for v in value_options]
+                    if value_options:
+                        selected_idx = st.selectbox("Verdi", range(len(value_options)),
+                                                   format_func=lambda i: value_labels[i],
+                                                   label_visibility="collapsed")
+                        selected_value = value_options[selected_idx]
 
     # --- Color Selection ---
     st.markdown("#### Velg farge")
@@ -419,17 +434,25 @@ def main():
     </script>
     """, height=0)
 
-    if not selected_color or not selected_value:
+    if not selected_color:
+        return
+    if not color_all and not selected_value:
         return
 
     rgb = COLORS[selected_color]
 
     # Find matching elements (use cached IFC if available)
-    matches_key = f"matches_{selected_pset}_{selected_prop}_{selected_value}"
+    if color_all:
+        matches_key = f"matches_all_{file_key}"
+    else:
+        matches_key = f"matches_{selected_pset}_{selected_prop}_{selected_value}"
     if matches_key not in st.session_state:
         with st.spinner("Søker etter elementer..."):
             ifc = st.session_state.get("ifc_file") or ifcopenshell.open(tmp_path)
-            matches = find_elements_by_property(ifc, selected_pset, selected_prop, selected_value)
+            if color_all:
+                matches = find_all_products(ifc)
+            else:
+                matches = find_elements_by_property(ifc, selected_pset, selected_prop, selected_value)
             st.session_state[matches_key] = matches
     else:
         matches = st.session_state[matches_key]
@@ -456,7 +479,10 @@ def main():
         ''', unsafe_allow_html=True)
 
     if not unique_guids:
-        st.warning(f"Ingen elementer funnet med {selected_pset}.{selected_prop}={selected_value}")
+        if color_all:
+            st.warning("Ingen IfcProducts med geometri funnet i filen")
+        else:
+            st.warning(f"Ingen elementer funnet med {selected_pset}.{selected_prop}={selected_value}")
         return
 
     # Preview button
@@ -466,7 +492,7 @@ def main():
         if elem.GlobalId in seen:
             continue
         seen.add(elem.GlobalId)
-        preview_data.append({"Type": elem.is_a(), "Navn": elem.Name or "-", "Egenskap": prop})
+        preview_data.append({"Type": elem.is_a(), "Navn": elem.Name or "-", "Egenskap": prop or "-"})
 
     if st.button("👁️ Vis elementer"):
         show_preview_dialog(preview_data)
@@ -513,7 +539,7 @@ def main():
                 "GUID": element.GlobalId,
                 "Type": element.is_a(),
                 "Navn": element.Name or "-",
-                "Egenskap": prop_name,
+                "Egenskap": prop_name or "-",
                 "Farget": "OK" if colored else "Feilet",
             })
 
