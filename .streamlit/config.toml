@@ -6,4 +6,6 @@ textColor = "#333333"
 
 [server]
 headless = true
-maxUploadSize = 600
+# Hosted on Streamlit Community Cloud (~1 GB RAM). ifcopenshell holds the whole
+# model in memory at ~6x the file size, so larger uploads OOM-kill the app.
+maxUploadSize = 200

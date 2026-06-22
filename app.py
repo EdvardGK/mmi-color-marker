@@ -16,6 +16,7 @@ import streamlit.components.v1 as components
 import pandas as pd
 import ifcopenshell
 import ifcopenshell.api
+import ifcopenshell.guid
 
 # =============================================================================
 # CONFIGURATION
@@ -224,6 +225,54 @@ def add_pset(ifc_file, element, color_name, filter_pset=None, filter_prop=None, 
     return False
 
 
+def add_shared_pset(ifc_file, elements, color_name,
+                    filter_pset=None, filter_prop=None, filter_value=None):
+    """Attach ONE NOSKI_Eksisterende pset to many elements via a single relationship.
+
+    The metadata is identical for every element coloured in a run, so one
+    IfcPropertySet related to all objects by one IfcRelDefinesByProperties is
+    valid IFC and uses ~10 entities total instead of ~20 per element. On large
+    models this is the difference between fitting in a memory-capped host and
+    being OOM-killed.
+    """
+    if not elements:
+        return 0
+
+    filter_info = f"{filter_pset}.{filter_prop}={filter_value}" if filter_pset else "Alle IfcProducts"
+    props = {
+        "Info": f'Farget med "{color_name}" basert på {filter_info}.',
+        "Farge": color_name,
+        "Filter": filter_info,
+        "MarkeringsDato": datetime.now().strftime("%Y-%m-%d"),
+        "Laget av": "Skiplum",
+        "Kontaktperson": "Edvard Granskogen Kjørstad",
+        "Epost": "egk@skiplum.no",
+        "Generert med": "Python og IfcOpenShell",
+    }
+
+    properties = [
+        ifc_file.create_entity(
+            "IfcPropertySingleValue",
+            Name=name,
+            NominalValue=ifc_file.create_entity("IfcText", str(value)),
+        )
+        for name, value in props.items()
+    ]
+    pset = ifc_file.create_entity(
+        "IfcPropertySet",
+        GlobalId=ifcopenshell.guid.new(),
+        Name=PSET_NAME,
+        HasProperties=properties,
+    )
+    ifc_file.create_entity(
+        "IfcRelDefinesByProperties",
+        GlobalId=ifcopenshell.guid.new(),
+        RelatedObjects=list(elements),
+        RelatingPropertyDefinition=pset,
+    )
+    return len(elements)
+
+
 # =============================================================================
 # DIALOGS
 # =============================================================================
@@ -317,6 +366,9 @@ def main():
 **Output:**
 - Farget IFC-fil med suffix `_farget`
 - PropertySet `NOSKI_Eksisterende` med info om fargingen
+
+**Maks filstørrelse:** ca. 200 MB. Den hostede versjonen har begrenset minne,
+og hele modellen lastes i RAM. For større modeller, kjør appen lokalt.
             """)
         return
 
@@ -448,7 +500,7 @@ def main():
         matches_key = f"matches_{selected_pset}_{selected_prop}_{selected_value}"
     if matches_key not in st.session_state:
         with st.spinner("Søker etter elementer..."):
-            ifc = st.session_state.get("ifc_file") or ifcopenshell.open(tmp_path)
+            # Reuse the already-loaded model (avoids a redundant full copy in RAM)
             if color_all:
                 matches = find_all_products(ifc)
             else:
@@ -507,8 +559,9 @@ def main():
             st.info(f"🔄 Starter fargelegging av {len(unique_guids)} elementer...")
             progress_bar = st.progress(0, text="Laster IFC-fil...")
 
-        # Load file
-        ifc = ifcopenshell.open(tmp_path)
+        # Reuse the already-loaded model instead of opening a 2nd copy in RAM.
+        # On a memory-capped host (Streamlit Community Cloud ~1 GB) a second
+        # full open of a large IFC is what pushes the process over the OOM limit.
         progress_bar.progress(15, text="Oppretter fargestil...")
 
         # Create style
@@ -522,6 +575,7 @@ def main():
         # Process elements
         results = {"total": 0, "colored": 0, "elements": []}
         processed = set()
+        tagged_elements = []
         total = len(unique_guids)
 
         for idx, (element, prop_name, pset_name) in enumerate(matches):
@@ -530,7 +584,7 @@ def main():
             processed.add(element.GlobalId)
 
             colored = apply_color_to_element(ifc, element, style, styled_index)
-            add_pset(ifc, element, selected_color, selected_pset, selected_prop, selected_value)
+            tagged_elements.append(element)
 
             if colored:
                 results["colored"] += 1
@@ -546,6 +600,11 @@ def main():
             # Update progress
             pct = 30 + int((len(processed) / total) * 50)
             progress_bar.progress(pct, text=f"Fargelegger... {len(processed)}/{total}")
+
+        # Attach metadata pset to all coloured elements via ONE relationship
+        progress_bar.progress(82, text="Legger til egenskaper...")
+        add_shared_pset(ifc, tagged_elements, selected_color,
+                        selected_pset, selected_prop, selected_value)
 
         progress_bar.progress(85, text="Lagrer IFC-fil...")
 
