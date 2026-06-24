@@ -82,13 +82,68 @@ def build_pset_index(ifc_file):
     return index
 
 
+def get_element_type(element):
+    """Return the IfcTypeProduct for an element, across schemas.
+
+    IFC4+ exposes the type via the IsTypedBy inverse; IFC2X3 has no IsTypedBy and
+    keeps IfcRelDefinesByType inside the shared IsDefinedBy inverse.
+    """
+    for rel in getattr(element, "IsTypedBy", None) or []:
+        if rel.is_a("IfcRelDefinesByType"):
+            return rel.RelatingType
+    for rel in getattr(element, "IsDefinedBy", None) or []:
+        if rel.is_a("IfcRelDefinesByType"):
+            return rel.RelatingType
+    return None
+
+
+def resolve_geometry_items(element):
+    """Every renderable geometry item for an element.
+
+    Descends through IfcMappedItem (geometry reused from a type's
+    RepresentationMap) to reach the real geometry, and — when the occurrence
+    carries no shape geometry of its own — falls back to the geometry defined on
+    the element's type. This is what makes "colour everything" actually colour
+    typed/mapped families (fasteners, doors, windows, furniture, MEP) that store
+    geometry once on the type and reference it from every instance.
+    """
+    def descend(item):
+        if item.is_a("IfcMappedItem"):
+            src = item.MappingSource
+            if src and src.MappedRepresentation:
+                for sub in src.MappedRepresentation.Items or []:
+                    yield from descend(sub)
+        else:
+            yield item
+
+    items = []
+    rep = getattr(element, "Representation", None)
+    if rep is not None:
+        for r in rep.Representations or []:
+            if r.is_a("IfcShapeRepresentation"):
+                for it in r.Items or []:
+                    items.extend(descend(it))
+
+    if not items:  # occurrence has no geometry — try the type's RepresentationMaps
+        etype = get_element_type(element)
+        for rm in getattr(etype, "RepresentationMaps", None) or []:
+            mapped = rm.MappedRepresentation
+            if mapped and mapped.is_a("IfcShapeRepresentation"):
+                for it in mapped.Items or []:
+                    items.extend(descend(it))
+    return items
+
+
 def find_all_products(ifc_file):
-    """Return all IfcProducts that carry a geometric representation."""
+    """Return all IfcProducts that carry geometry (own representation or via type)."""
     matches = []
     for element in ifc_file.by_type("IfcProduct"):
-        if getattr(element, "Representation", None) is None:
+        if getattr(element, "Representation", None) is not None:
+            matches.append((element, None, None))
             continue
-        matches.append((element, None, None))
+        etype = get_element_type(element)
+        if getattr(etype, "RepresentationMaps", None):
+            matches.append((element, None, None))
     return matches
 
 
@@ -178,50 +233,25 @@ def build_styled_item_index(ifc_file):
     return index
 
 
-def _style_geometry_item(ifc_file, item, styles, styled_index):
-    """Style a single representation item.
-
-    Geometry reused from a type is referenced through an IfcMappedItem; a style
-    placed on the IfcMappedItem itself does not render in viewers, so we descend
-    into MappingSource.MappedRepresentation and style the real geometry there.
-    That geometry is shared by every instance of the type, so colouring it once
-    colours all instances that use the same map (correct for "colour all").
-
-    `styles` is the schema-correct value for IfcStyledItem.Styles (see
-    get_style_ref): a bare IfcSurfaceStyle in IFC4, an IfcPresentationStyleAssignment
-    in IFC2X3.
-    """
-    if item.is_a("IfcMappedItem"):
-        mapped = item.MappingSource.MappedRepresentation
-        applied = False
-        for sub in mapped.Items:
-            if _style_geometry_item(ifc_file, sub, styles, styled_index):
-                applied = True
-        return applied
-
-    existing_styled = styled_index.get(item.id())
-    if existing_styled:
-        existing_styled.Styles = styles
-    else:
-        new_si = ifc_file.create_entity(
-            "IfcStyledItem", Item=item, Styles=styles, Name=None
-        )
-        styled_index[item.id()] = new_si
-    return True
-
-
 def apply_color_to_element(ifc_file, element, styles, styled_index):
-    """Apply surface style to element's representation."""
-    if not hasattr(element, "Representation") or element.Representation is None:
-        return False
+    """Apply the surface style to every renderable geometry item of an element.
+
+    Geometry is resolved via resolve_geometry_items (mapped + type fallback) so
+    typed/mapped families colour correctly. `styles` is the schema-correct value
+    for IfcStyledItem.Styles (see get_style_ref): a bare IfcSurfaceStyle on IFC4,
+    an IfcPresentationStyleAssignment on IFC2X3.
+    """
     try:
         applied = False
-        for rep in element.Representation.Representations:
-            if not rep.is_a("IfcShapeRepresentation"):
-                continue
-            for item in rep.Items:
-                if _style_geometry_item(ifc_file, item, styles, styled_index):
-                    applied = True
+        for item in resolve_geometry_items(element):
+            existing_styled = styled_index.get(item.id())
+            if existing_styled:
+                existing_styled.Styles = styles
+            else:
+                styled_index[item.id()] = ifc_file.create_entity(
+                    "IfcStyledItem", Item=item, Styles=styles, Name=None
+                )
+            applied = True
         return applied
     except Exception:
         return False
@@ -425,6 +455,9 @@ og hele modellen lastes i RAM. For større modeller, kjør appen lokalt.
     else:
         ifc = st.session_state[file_key]
         tmp_path = st.session_state["tmp_path"]
+
+    # Detected schema drives how styles are written (IFC2X3 vs IFC4)
+    st.caption(f"📐 Skjema: **{ifc.schema}**")
 
     # --- Selection mode ---
     color_all = st.checkbox("Fargelegg alle IfcProducts (ingen egenskapsfilter)")
