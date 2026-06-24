@@ -233,6 +233,32 @@ def build_styled_item_index(ifc_file):
     return index
 
 
+def override_competing_styles(ifc_file):
+    """Strip every competing colour source so our IfcStyledItem is the only one.
+
+    A direct IfcStyledItem already outranks material and presentation-layer styles
+    per the IFC precedence rules, but non-conformant viewers sometimes honour a
+    material or layer colour instead. To guarantee the chosen colour always shows,
+    we remove those sources entirely:
+      - IfcPresentationLayerWithStyle (layer colours)
+      - IfcMaterialDefinitionRepresentation + IfcStyledRepresentation (material colours)
+    Material *data* (IfcMaterial and its associations) is kept — only the colour is
+    removed. Our geometry styled items live outside these and are untouched.
+    """
+    removed_layers = removed_materials = 0
+    for layer in list(ifc_file.by_type("IfcPresentationLayerWithStyle")):
+        ifc_file.remove(layer)
+        removed_layers += 1
+    for styled_rep in list(ifc_file.by_type("IfcStyledRepresentation")):
+        for item in list(styled_rep.Items or []):
+            ifc_file.remove(item)
+        ifc_file.remove(styled_rep)
+        removed_materials += 1
+    for mdr in list(ifc_file.by_type("IfcMaterialDefinitionRepresentation")):
+        ifc_file.remove(mdr)
+    return removed_layers, removed_materials
+
+
 def apply_color_to_element(ifc_file, element, styles, styled_index):
     """Apply the surface style to every renderable geometry item of an element.
 
@@ -461,6 +487,12 @@ og hele modellen lastes i RAM. For større modeller, kjør appen lokalt.
 
     # --- Selection mode ---
     color_all = st.checkbox("Fargelegg alle IfcProducts (ingen egenskapsfilter)")
+    override_styles = st.checkbox(
+        "Overstyr alle eksisterende farger (garanterer at fargen vises)",
+        value=True,
+        help="Fjerner eksisterende material- og lagfarger slik at den valgte fargen "
+             "alltid vises i alle viewere. Materialdata beholdes — kun fargen fjernes.",
+    )
 
     selected_pset = None
     selected_prop = None
@@ -668,6 +700,11 @@ og hele modellen lastes i RAM. For større modeller, kjør appen lokalt.
             # Update progress
             pct = 30 + int((len(processed) / total) * 50)
             progress_bar.progress(pct, text=f"Fargelegger... {len(processed)}/{total}")
+
+        # Override competing colour sources so our colour always wins
+        if override_styles:
+            progress_bar.progress(80, text="Overstyrer eksisterende farger...")
+            override_competing_styles(ifc)
 
         # Attach metadata pset to all coloured elements via ONE relationship
         progress_bar.progress(82, text="Legger til egenskaper...")
