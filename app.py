@@ -160,6 +160,34 @@ def build_styled_item_index(ifc_file):
     return index
 
 
+def _style_geometry_item(ifc_file, item, style, styled_index):
+    """Style a single representation item.
+
+    Geometry reused from a type is referenced through an IfcMappedItem; a style
+    placed on the IfcMappedItem itself does not render in viewers, so we descend
+    into MappingSource.MappedRepresentation and style the real geometry there.
+    That geometry is shared by every instance of the type, so colouring it once
+    colours all instances that use the same map (correct for "colour all").
+    """
+    if item.is_a("IfcMappedItem"):
+        mapped = item.MappingSource.MappedRepresentation
+        applied = False
+        for sub in mapped.Items:
+            if _style_geometry_item(ifc_file, sub, style, styled_index):
+                applied = True
+        return applied
+
+    existing_styled = styled_index.get(item.id())
+    if existing_styled:
+        existing_styled.Styles = [style]
+    else:
+        new_si = ifc_file.create_entity(
+            "IfcStyledItem", Item=item, Styles=[style], Name=None
+        )
+        styled_index[item.id()] = new_si
+    return True
+
+
 def apply_color_to_element(ifc_file, element, style, styled_index):
     """Apply surface style to element's representation."""
     if not hasattr(element, "Representation") or element.Representation is None:
@@ -169,25 +197,9 @@ def apply_color_to_element(ifc_file, element, style, styled_index):
         for rep in element.Representation.Representations:
             if not rep.is_a("IfcShapeRepresentation"):
                 continue
-
             for item in rep.Items:
-                existing_styled = styled_index.get(item.id())
-
-                if existing_styled:
-                    # Update existing styled item with our style
-                    existing_styled.Styles = [style]
+                if _style_geometry_item(ifc_file, item, style, styled_index):
                     applied = True
-                else:
-                    # Create new styled item
-                    new_si = ifc_file.create_entity(
-                        "IfcStyledItem",
-                        Item=item,
-                        Styles=[style],
-                        Name=None
-                    )
-                    styled_index[item.id()] = new_si
-                    applied = True
-
         return applied
     except Exception:
         return False
