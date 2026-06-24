@@ -151,6 +151,24 @@ def get_or_create_style(ifc_file, color_name, rgb):
     return style
 
 
+def get_style_ref(ifc_file, surface_style):
+    """Return the value list for IfcStyledItem.Styles, valid for the schema.
+
+    IFC4 accepts a bare IfcSurfaceStyle. IFC2X3 requires the surface style to be
+    wrapped in an IfcPresentationStyleAssignment — a bare IfcSurfaceStyle there is
+    schema-invalid and every viewer silently ignores it (→ nothing renders). One
+    assignment is reused for the whole run.
+    """
+    if ifc_file.schema == "IFC2X3":
+        for assignment in ifc_file.by_type("IfcPresentationStyleAssignment"):
+            if surface_style in (assignment.Styles or []):
+                return [assignment]
+        return [ifc_file.create_entity(
+            "IfcPresentationStyleAssignment", Styles=[surface_style]
+        )]
+    return [surface_style]
+
+
 def build_styled_item_index(ifc_file):
     """Build index of styled items by their Item reference."""
     index = {}
@@ -160,7 +178,7 @@ def build_styled_item_index(ifc_file):
     return index
 
 
-def _style_geometry_item(ifc_file, item, style, styled_index):
+def _style_geometry_item(ifc_file, item, styles, styled_index):
     """Style a single representation item.
 
     Geometry reused from a type is referenced through an IfcMappedItem; a style
@@ -168,27 +186,31 @@ def _style_geometry_item(ifc_file, item, style, styled_index):
     into MappingSource.MappedRepresentation and style the real geometry there.
     That geometry is shared by every instance of the type, so colouring it once
     colours all instances that use the same map (correct for "colour all").
+
+    `styles` is the schema-correct value for IfcStyledItem.Styles (see
+    get_style_ref): a bare IfcSurfaceStyle in IFC4, an IfcPresentationStyleAssignment
+    in IFC2X3.
     """
     if item.is_a("IfcMappedItem"):
         mapped = item.MappingSource.MappedRepresentation
         applied = False
         for sub in mapped.Items:
-            if _style_geometry_item(ifc_file, sub, style, styled_index):
+            if _style_geometry_item(ifc_file, sub, styles, styled_index):
                 applied = True
         return applied
 
     existing_styled = styled_index.get(item.id())
     if existing_styled:
-        existing_styled.Styles = [style]
+        existing_styled.Styles = styles
     else:
         new_si = ifc_file.create_entity(
-            "IfcStyledItem", Item=item, Styles=[style], Name=None
+            "IfcStyledItem", Item=item, Styles=styles, Name=None
         )
         styled_index[item.id()] = new_si
     return True
 
 
-def apply_color_to_element(ifc_file, element, style, styled_index):
+def apply_color_to_element(ifc_file, element, styles, styled_index):
     """Apply surface style to element's representation."""
     if not hasattr(element, "Representation") or element.Representation is None:
         return False
@@ -198,7 +220,7 @@ def apply_color_to_element(ifc_file, element, style, styled_index):
             if not rep.is_a("IfcShapeRepresentation"):
                 continue
             for item in rep.Items:
-                if _style_geometry_item(ifc_file, item, style, styled_index):
+                if _style_geometry_item(ifc_file, item, styles, styled_index):
                     applied = True
         return applied
     except Exception:
@@ -576,8 +598,9 @@ og hele modellen lastes i RAM. For større modeller, kjør appen lokalt.
         # full open of a large IFC is what pushes the process over the OOM limit.
         progress_bar.progress(15, text="Oppretter fargestil...")
 
-        # Create style
+        # Create style + schema-correct reference for IfcStyledItem.Styles
         style = get_or_create_style(ifc, selected_color, rgb)
+        styles_ref = get_style_ref(ifc, style)
         progress_bar.progress(20, text="Indekserer eksisterende stiler...")
 
         # Build styled item index for fast lookup
@@ -595,7 +618,7 @@ og hele modellen lastes i RAM. For større modeller, kjør appen lokalt.
                 continue
             processed.add(element.GlobalId)
 
-            colored = apply_color_to_element(ifc, element, style, styled_index)
+            colored = apply_color_to_element(ifc, element, styles_ref, styled_index)
             tagged_elements.append(element)
 
             if colored:
