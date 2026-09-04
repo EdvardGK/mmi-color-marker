@@ -124,3 +124,13 @@ parts whose MMI sat on the aggregating IfcStair. No values on types in this file
 - Verified live on skiplum.com (Playwright, same file): 0 uncoloured, no console errors.
 - Not done: inheriting values from the element TYPE's psets (Revit often puts psets on
   types). No case in the samples; add when one shows up.
+
+## Addendum, evening: on its own hostname
+
+edkjo ran `dns.sh fargekoding` (and `dns.sh sitecast`) at ~21:20. Caddy had been retrying ACME
+for the host for nine hours and sat in backoff, so a restart (`caddy-restart.sh`, new in the
+stack) got the certificate in ~5 s. The catalogue row now embeds
+`https://fargekoding.skiplum.com/?embed=true`; `mmi-farger.skiplum.com` is a 301 to it. Verified
+live: iframe from the new host, upload input present, header "🎨 Fargekoding", no console errors.
+Also today: the line beside the title on the tool page is the row's description, set by edkjo to
+"Rask fargekoding av IFC-objekter". `mmi-farger.streamlit.app` still runs; retire when he says.
