@@ -38,6 +38,16 @@ COLORS = {
 
 PSET_NAME = "NOSKI_Eksisterende"
 
+# Synthetic value option: every geometry-bearing element with no value for the chosen
+# property, whether the pset is missing, the property is missing or its value is empty.
+# The label reuses the wording the app already used for empty values.
+NO_VALUE = "__ingen_verdi__"
+NO_VALUE_LABEL = "Ingen verdi"
+
+
+def label_of(value):
+    return NO_VALUE_LABEL if value == NO_VALUE else str(value)
+
 # =============================================================================
 # IFC PROCESSING
 # =============================================================================
@@ -148,38 +158,54 @@ def find_all_products(ifc_file):
     return matches
 
 
-def find_elements_by_property(ifc_file, pset_name, prop_name, prop_value):
-    """Find all elements matching a specific pset/property/value combination."""
-    matches = []
-    for element in ifc_file.by_type("IfcProduct"):
-        if not hasattr(element, "IsDefinedBy"):
+def build_effective_values(ifc_file, pset_name, prop_name):
+    """Effective value of pset_name.prop_name for every IfcProduct.
+
+    An element's own value wins. Without one, the value is inherited from the
+    nearest aggregating parent (IfcRelAggregates / IfcRelNests, walked upwards),
+    so the parts of an assembly, curtain wall, stair or roof take the value set
+    on the whole — the parts carry the geometry, the assembly carries the pset.
+    Elements with neither get None. Empty strings count as no value.
+
+    Returns ({element.id(): value | None}, [all IfcProducts]). One pass over the
+    property relationships plus one memoised walk per product.
+    """
+    own = {}
+    for rel in ifc_file.by_type("IfcRelDefinesByProperties"):
+        pset = rel.RelatingPropertyDefinition
+        if not pset.is_a("IfcPropertySet") or pset.Name != pset_name:
             continue
-        for rel in element.IsDefinedBy:
-            if not rel.is_a("IfcRelDefinesByProperties"):
+        for prop in pset.HasProperties:
+            if not prop.is_a("IfcPropertySingleValue") or prop.Name != prop_name:
                 continue
-            pset = rel.RelatingPropertyDefinition
-            if not pset.is_a("IfcPropertySet"):
+            nominal = prop.NominalValue
+            value = nominal.wrappedValue if (nominal is not None and hasattr(nominal, "wrappedValue")) else nominal
+            if value is None or value == "":
                 continue
-            if pset.Name != pset_name:
-                continue
+            for obj in rel.RelatedObjects:
+                own[obj.id()] = str(value)
 
-            for prop in pset.HasProperties:
-                if not prop.is_a("IfcPropertySingleValue"):
-                    continue
-                if prop.Name != prop_name:
-                    continue
+    effective = {}
 
-                nominal_value = prop.NominalValue
-                if nominal_value is None:
-                    value = "Ingen verdi"
-                else:
-                    value = nominal_value.wrappedValue if hasattr(nominal_value, "wrappedValue") else nominal_value
-                    value = str(value) if value else "Ingen verdi"
+    def resolve(element, depth=0):
+        eid = element.id()
+        if eid in effective:
+            return effective[eid]
+        value = own.get(eid)
+        if value is None and depth < 32:
+            for rel in getattr(element, "Decomposes", None) or []:
+                parent = rel.RelatingObject
+                if parent is not None and parent.is_a("IfcProduct"):
+                    value = resolve(parent, depth + 1)
+                    if value is not None:
+                        break
+        effective[eid] = value
+        return value
 
-                if value == prop_value:
-                    matches.append((element, prop_name, pset_name))
-
-    return matches
+    products = ifc_file.by_type("IfcProduct")
+    for element in products:
+        resolve(element)
+    return effective, products
 
 
 def get_or_create_style(ifc_file, color_name, rgb):
@@ -441,18 +467,18 @@ def pick_color_grid():
     return selected_color
 
 
-def pick_value_colors(values, widget_ns):
+def pick_value_colors(value_options, counts, widget_ns):
     """Multiselect of property values, then one colour selectbox per chosen value.
 
-    `values` is {value: count}. Returns [(value, color_name)] in the chosen order.
-    Defaults rotate through the palette (skipping white) so N values get N
-    distinct colours without clicking.
+    `value_options` is the ordered option list (real values by count, then
+    NO_VALUE); `counts` maps each to its element count. Returns
+    [(value, color_name)] in the chosen order. Defaults rotate through the
+    palette (skipping white) so N values get N distinct colours without clicking.
     """
     st.markdown("#### Velg verdier og farger")
-    value_options = sorted(values.keys(), key=lambda v: -values[v])
     chosen = st.multiselect(
         "Verdier", value_options,
-        format_func=lambda v: f"{v} ({values[v]})",
+        format_func=lambda v: f"{label_of(v)} ({counts[v]})",
         key=f"values_{widget_ns}",
         label_visibility="collapsed",
     )
@@ -462,7 +488,7 @@ def pick_value_colors(values, widget_ns):
     for i, value in enumerate(chosen):
         c1, c2, c3 = st.columns([3, 2, 1])
         with c1:
-            st.markdown(f"`{value}` · {values[value]}")
+            st.markdown(f"`{label_of(value)}` · {counts[value]}")
         with c2:
             color_name = st.selectbox(
                 "Farge", color_names,
@@ -619,11 +645,35 @@ og hele modellen lastes i RAM. For større modeller, kjør appen lokalt.
             prop_names = sorted(pset_index[selected_pset].keys())
             selected_prop = st.selectbox("Egenskap", prop_names, label_visibility="collapsed")
             if selected_prop:
-                values = pset_index[selected_pset][selected_prop]
-                if values:
-                    groups = pick_value_colors(
-                        values, widget_ns=f"{file_key}_{selected_pset}_{selected_prop}"
-                    )
+                # Effective value per element (own, else inherited from the
+                # aggregating parent), cached per file + property.
+                eff_key = f"eff_{file_key}_{selected_pset}_{selected_prop}"
+                if eff_key not in st.session_state:
+                    with st.spinner("Søker etter elementer..."):
+                        st.session_state[eff_key] = build_effective_values(
+                            ifc, selected_pset, selected_prop
+                        )
+                effective, products = st.session_state[eff_key]
+
+                # Geometry-bearing products (same list the all-geometry mode uses)
+                geom_key = f"matches_all_{file_key}"
+                if geom_key not in st.session_state:
+                    st.session_state[geom_key] = find_all_products(ifc)
+                geom_products = st.session_state[geom_key]
+
+                counts = {}
+                for v in effective.values():
+                    if v is not None:
+                        counts[v] = counts.get(v, 0) + 1
+                value_options = sorted(counts, key=lambda v: -counts[v])
+                counts[NO_VALUE] = sum(
+                    1 for el, _, _ in geom_products if effective.get(el.id()) is None
+                )
+                value_options.append(NO_VALUE)
+                groups = pick_value_colors(
+                    value_options, counts,
+                    widget_ns=f"{file_key}_{selected_pset}_{selected_prop}",
+                )
     else:
         selected_color = pick_color_grid()
         if selected_color:
@@ -644,10 +694,18 @@ og hele modellen lastes i RAM. For større modeller, kjør appen lokalt.
             with st.spinner("Søker etter elementer..."):
                 if color_all:
                     st.session_state[matches_key] = find_all_products(ifc)
+                elif value == NO_VALUE:
+                    st.session_state[matches_key] = [
+                        (el, selected_prop, selected_pset)
+                        for el, _, _ in geom_products
+                        if effective.get(el.id()) is None
+                    ]
                 else:
-                    st.session_state[matches_key] = find_elements_by_property(
-                        ifc, selected_pset, selected_prop, value
-                    )
+                    st.session_state[matches_key] = [
+                        (el, selected_prop, selected_pset)
+                        for el in products
+                        if effective.get(el.id()) == value
+                    ]
         group_matches.append((value, color_name, st.session_state[matches_key]))
 
     unique_guids = set()
@@ -684,7 +742,7 @@ og hele modellen lastes i RAM. For større modeller, kjør appen lokalt.
     if not color_all:
         st.dataframe(
             pd.DataFrame([
-                {"Verdi": value, "Farge": color_name,
+                {"Verdi": label_of(value), "Farge": color_name,
                  "Elementer": len(set(m[0].GlobalId for m in matches))}
                 for value, color_name, matches in group_matches
             ]),
@@ -708,7 +766,7 @@ og hele modellen lastes i RAM. For større modeller, kjør appen lokalt.
             seen.add(elem.GlobalId)
             preview_data.append({
                 "Type": elem.is_a(), "Navn": elem.Name or "-",
-                "Egenskap": prop or "-", "Verdi": value if value is not None else "-",
+                "Egenskap": prop or "-", "Verdi": label_of(value) if value is not None else "-",
                 "Farge": color_name,
             })
 
@@ -762,7 +820,7 @@ og hele modellen lastes i RAM. For større modeller, kjør appen lokalt.
                     "Type": element.is_a(),
                     "Navn": element.Name or "-",
                     "Egenskap": prop_name or "-",
-                    "Verdi": value if value is not None else "-",
+                    "Verdi": label_of(value) if value is not None else "-",
                     "Farge": color_name,
                     "Farget": "OK" if colored else "Feilet",
                 })
@@ -773,7 +831,8 @@ og hele modellen lastes i RAM. For større modeller, kjør appen lokalt.
 
             # Attach metadata pset to this group's elements via ONE relationship
             add_shared_pset(ifc, tagged_elements, color_name,
-                            selected_pset, selected_prop, value)
+                            selected_pset, selected_prop,
+                            label_of(value) if value is not None else None)
 
         # Override competing colour sources so our colour always wins
         if override_styles:
