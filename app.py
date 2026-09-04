@@ -1,8 +1,9 @@
 """
 Fargekoding
 
-Marks IFC elements with MMI=700 property to indicate existing elements.
-Adds color and NOSKI_Eksisterende property set.
+Colours IFC elements by property value: one PropertySet.property, several values,
+one colour per value. Or all geometry in one colour. Tags coloured elements with
+the NOSKI_Eksisterende property set (one shared pset per colour group).
 
 Run: streamlit run app.py
 """
@@ -378,6 +379,106 @@ def show_results_dialog(data):
     st.dataframe(pd.DataFrame(data), hide_index=True, height=500)
 
 
+def hex_of(color_name):
+    r, g, b = COLORS[color_name]
+    return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
+
+
+def pick_color_grid():
+    """3x3 grid of colour buttons (all-geometry mode). Returns the chosen name or None."""
+    st.markdown("#### Velg farge")
+    selected_color = st.session_state.get("selected_color")
+
+    # Clear invalid color selection
+    if selected_color and selected_color not in COLORS:
+        selected_color = None
+        st.session_state.selected_color = None
+
+    color_list = list(COLORS.items())
+    for row in range(3):
+        cols = st.columns(3)
+        for i, col in enumerate(cols):
+            idx = row * 3 + i
+            if idx >= len(color_list):
+                break
+            name, _rgb = color_list[idx]
+            with col:
+                if st.button(name, key=f"btn_{name}", use_container_width=True):
+                    st.session_state.selected_color = name
+                    st.rerun()
+
+    # Inject JS to color the buttons
+    color_js = "const colorMap = {"
+    for name in COLORS:
+        is_selected = selected_color == name
+        border = "3px solid #333" if is_selected else "none"
+        color_js += f'"{name}": {{hex: "{hex_of(name)}", selected: {str(is_selected).lower()}, border: "{border}"}},'
+    color_js += "};"
+
+    components.html(f"""
+    <script>
+        function colorButtons() {{
+            {color_js}
+            const buttons = window.parent.document.querySelectorAll('button[kind="secondary"]');
+            buttons.forEach(btn => {{
+                const text = btn.innerText.trim();
+                if (colorMap[text]) {{
+                    btn.style.background = colorMap[text].hex;
+                    btn.style.color = 'white';
+                    btn.style.border = colorMap[text].border;
+                    btn.style.textShadow = '1px 1px 2px rgba(0,0,0,0.4)';
+                    btn.style.fontWeight = '600';
+                    btn.style.minHeight = '45px';
+                    btn.style.width = '100%';
+                }}
+            }});
+        }}
+        colorButtons();
+        setTimeout(colorButtons, 100);
+        setTimeout(colorButtons, 300);
+    </script>
+    """, height=0)
+    return selected_color
+
+
+def pick_value_colors(values, widget_ns):
+    """Multiselect of property values, then one colour selectbox per chosen value.
+
+    `values` is {value: count}. Returns [(value, color_name)] in the chosen order.
+    Defaults rotate through the palette (skipping white) so N values get N
+    distinct colours without clicking.
+    """
+    st.markdown("#### Velg verdier og farger")
+    value_options = sorted(values.keys(), key=lambda v: -values[v])
+    chosen = st.multiselect(
+        "Verdier", value_options,
+        format_func=lambda v: f"{v} ({values[v]})",
+        key=f"values_{widget_ns}",
+        label_visibility="collapsed",
+    )
+    color_names = list(COLORS)
+    palette = [c for c in color_names if c != "Hvit"] or color_names
+    out = []
+    for i, value in enumerate(chosen):
+        c1, c2, c3 = st.columns([3, 2, 1])
+        with c1:
+            st.markdown(f"`{value}` · {values[value]}")
+        with c2:
+            color_name = st.selectbox(
+                "Farge", color_names,
+                index=color_names.index(palette[i % len(palette)]),
+                key=f"color_{widget_ns}_{value}",
+                label_visibility="collapsed",
+            )
+        with c3:
+            st.markdown(
+                f'<div style="background:{hex_of(color_name)};height:2.4rem;border-radius:8px;"></div>',
+                unsafe_allow_html=True,
+            )
+        out.append((value, color_name))
+    return out
+
+
 # =============================================================================
 # UI
 # =============================================================================
@@ -496,7 +597,9 @@ og hele modellen lastes i RAM. For større modeller, kjør appen lokalt.
 
     selected_pset = None
     selected_prop = None
-    selected_value = None
+    # groups: [(value, color_name)] — property mode has one entry per chosen
+    # value; all-geometry mode has a single (None, color) entry.
+    groups = []
 
     if not color_all:
         # --- Property Selection (single scan, cached index) ---
@@ -514,101 +617,42 @@ og hele modellen lastes i RAM. For større modeller, kjør appen lokalt.
 
         if selected_pset:
             prop_names = sorted(pset_index[selected_pset].keys())
+            selected_prop = st.selectbox("Egenskap", prop_names, label_visibility="collapsed")
+            if selected_prop:
+                values = pset_index[selected_pset][selected_prop]
+                if values:
+                    groups = pick_value_colors(
+                        values, widget_ns=f"{file_key}_{selected_pset}_{selected_prop}"
+                    )
+    else:
+        selected_color = pick_color_grid()
+        if selected_color:
+            groups = [(None, selected_color)]
 
-            col1, col2 = st.columns(2)
-            with col1:
-                selected_prop = st.selectbox("Egenskap", prop_names, label_visibility="collapsed")
-            with col2:
-                if selected_prop:
-                    values = pset_index[selected_pset][selected_prop]
-                    value_options = sorted(values.keys(), key=lambda v: -values[v])
-                    value_labels = [f"{v} ({values[v]})" for v in value_options]
-                    if value_options:
-                        selected_idx = st.selectbox("Verdi", range(len(value_options)),
-                                                   format_func=lambda i: value_labels[i],
-                                                   label_visibility="collapsed")
-                        selected_value = value_options[selected_idx]
-
-    # --- Color Selection ---
-    st.markdown("#### Velg farge")
-    selected_color = st.session_state.get("selected_color")
-
-    # Clear invalid color selection
-    if selected_color and selected_color not in COLORS:
-        selected_color = None
-        st.session_state.selected_color = None
-
-    # Render color buttons (3x3 grid)
-    color_list = list(COLORS.items())
-    for row in range(3):
-        cols = st.columns(3)
-        for i, col in enumerate(cols):
-            idx = row * 3 + i
-            if idx >= len(color_list):
-                break
-            name, rgb_val = color_list[idx]
-            with col:
-                if st.button(name, key=f"btn_{name}", use_container_width=True):
-                    st.session_state.selected_color = name
-                    st.rerun()
-
-    # Inject JS to color the buttons
-    color_js = "const colorMap = {"
-    for name, rgb_val in COLORS.items():
-        hex_color = f"#{int(rgb_val[0]*255):02x}{int(rgb_val[1]*255):02x}{int(rgb_val[2]*255):02x}"
-        is_selected = selected_color == name
-        border = "3px solid #333" if is_selected else "none"
-        color_js += f'"{name}": {{hex: "{hex_color}", selected: {str(is_selected).lower()}, border: "{border}"}},'
-    color_js += "};"
-
-    components.html(f"""
-    <script>
-        function colorButtons() {{
-            {color_js}
-            const buttons = window.parent.document.querySelectorAll('button[kind="secondary"]');
-            buttons.forEach(btn => {{
-                const text = btn.innerText.trim();
-                if (colorMap[text]) {{
-                    btn.style.background = colorMap[text].hex;
-                    btn.style.color = 'white';
-                    btn.style.border = colorMap[text].border;
-                    btn.style.textShadow = '1px 1px 2px rgba(0,0,0,0.4)';
-                    btn.style.fontWeight = '600';
-                    btn.style.minHeight = '45px';
-                    btn.style.width = '100%';
-                }}
-            }});
-        }}
-        colorButtons();
-        setTimeout(colorButtons, 100);
-        setTimeout(colorButtons, 300);
-    </script>
-    """, height=0)
-
-    if not selected_color:
-        return
-    if not color_all and not selected_value:
+    if not groups:
         return
 
-    rgb = COLORS[selected_color]
+    # Find matching elements per colour group (cached per file + filter).
+    # Reuses the already-loaded model (no second copy in RAM).
+    group_matches = []  # [(value, color_name, matches)]
+    for value, color_name in groups:
+        if color_all:
+            matches_key = f"matches_all_{file_key}"
+        else:
+            matches_key = f"matches_{file_key}_{selected_pset}_{selected_prop}_{value}"
+        if matches_key not in st.session_state:
+            with st.spinner("Søker etter elementer..."):
+                if color_all:
+                    st.session_state[matches_key] = find_all_products(ifc)
+                else:
+                    st.session_state[matches_key] = find_elements_by_property(
+                        ifc, selected_pset, selected_prop, value
+                    )
+        group_matches.append((value, color_name, st.session_state[matches_key]))
 
-    # Find matching elements (use cached IFC if available)
-    if color_all:
-        matches_key = f"matches_all_{file_key}"
-    else:
-        matches_key = f"matches_{selected_pset}_{selected_prop}_{selected_value}"
-    if matches_key not in st.session_state:
-        with st.spinner("Søker etter elementer..."):
-            # Reuse the already-loaded model (avoids a redundant full copy in RAM)
-            if color_all:
-                matches = find_all_products(ifc)
-            else:
-                matches = find_elements_by_property(ifc, selected_pset, selected_prop, selected_value)
-            st.session_state[matches_key] = matches
-    else:
-        matches = st.session_state[matches_key]
-
-    unique_guids = set(m[0].GlobalId for m in matches)
+    unique_guids = set()
+    for _value, _color, matches in group_matches:
+        unique_guids.update(m[0].GlobalId for m in matches)
 
     # Summary cards
     st.markdown("#### Oppsummering")
@@ -621,29 +665,52 @@ og hele modellen lastes i RAM. For større modeller, kjør appen lokalt.
         </div>
         ''', unsafe_allow_html=True)
     with col2:
-        hex_color = f"#{int(rgb[0]*255):02x}{int(rgb[1]*255):02x}{int(rgb[2]*255):02x}"
-        st.markdown(f'''
-        <div class="summary-card" style="border-left-color: {hex_color};">
-            <h4>Valgt farge</h4>
-            <div class="value" style="color: {hex_color};">{selected_color}</div>
-        </div>
-        ''', unsafe_allow_html=True)
+        if color_all:
+            color_name = groups[0][1]
+            st.markdown(f'''
+            <div class="summary-card" style="border-left-color: {hex_of(color_name)};">
+                <h4>Valgt farge</h4>
+                <div class="value" style="color: {hex_of(color_name)};">{color_name}</div>
+            </div>
+            ''', unsafe_allow_html=True)
+        else:
+            st.markdown(f'''
+            <div class="summary-card">
+                <h4>Farger</h4>
+                <div class="value">{len(groups)}</div>
+            </div>
+            ''', unsafe_allow_html=True)
+
+    if not color_all:
+        st.dataframe(
+            pd.DataFrame([
+                {"Verdi": value, "Farge": color_name,
+                 "Elementer": len(set(m[0].GlobalId for m in matches))}
+                for value, color_name, matches in group_matches
+            ]),
+            hide_index=True, use_container_width=True,
+        )
 
     if not unique_guids:
         if color_all:
             st.warning("Ingen IfcProducts med geometri funnet i filen")
         else:
-            st.warning(f"Ingen elementer funnet med {selected_pset}.{selected_prop}={selected_value}")
+            st.warning(f"Ingen elementer funnet med {selected_pset}.{selected_prop}")
         return
 
     # Preview button
     preview_data = []
     seen = set()
-    for elem, prop, pset in matches:
-        if elem.GlobalId in seen:
-            continue
-        seen.add(elem.GlobalId)
-        preview_data.append({"Type": elem.is_a(), "Navn": elem.Name or "-", "Egenskap": prop or "-"})
+    for value, color_name, matches in group_matches:
+        for elem, prop, pset in matches:
+            if elem.GlobalId in seen:
+                continue
+            seen.add(elem.GlobalId)
+            preview_data.append({
+                "Type": elem.is_a(), "Navn": elem.Name or "-",
+                "Egenskap": prop or "-", "Verdi": value if value is not None else "-",
+                "Farge": color_name,
+            })
 
     if st.button("👁️ Vis elementer"):
         show_preview_dialog(preview_data)
@@ -661,55 +728,57 @@ og hele modellen lastes i RAM. For større modeller, kjør appen lokalt.
         # Reuse the already-loaded model instead of opening a 2nd copy in RAM.
         # On a memory-capped host (Streamlit Community Cloud ~1 GB) a second
         # full open of a large IFC is what pushes the process over the OOM limit.
-        progress_bar.progress(15, text="Oppretter fargestil...")
-
-        # Create style + schema-correct reference for IfcStyledItem.Styles
-        style = get_or_create_style(ifc, selected_color, rgb)
-        styles_ref = get_style_ref(ifc, style)
         progress_bar.progress(20, text="Indekserer eksisterende stiler...")
 
         # Build styled item index for fast lookup
         styled_index = build_styled_item_index(ifc)
         progress_bar.progress(30, text=f"Fargelegger {len(unique_guids)} elementer...")
 
-        # Process elements
+        # Process elements one colour group at a time. An element is coloured
+        # once (first group wins); each group gets its own shared metadata pset.
         results = {"total": 0, "colored": 0, "elements": []}
         processed = set()
-        tagged_elements = []
         total = len(unique_guids)
 
-        for idx, (element, prop_name, pset_name) in enumerate(matches):
-            if element.GlobalId in processed:
-                continue
-            processed.add(element.GlobalId)
+        for value, color_name, matches in group_matches:
+            # Style + schema-correct reference for IfcStyledItem.Styles
+            style = get_or_create_style(ifc, color_name, COLORS[color_name])
+            styles_ref = get_style_ref(ifc, style)
+            tagged_elements = []
 
-            colored = apply_color_to_element(ifc, element, styles_ref, styled_index)
-            tagged_elements.append(element)
+            for element, prop_name, pset_name in matches:
+                if element.GlobalId in processed:
+                    continue
+                processed.add(element.GlobalId)
 
-            if colored:
-                results["colored"] += 1
-            results["total"] += 1
-            results["elements"].append({
-                "GUID": element.GlobalId,
-                "Type": element.is_a(),
-                "Navn": element.Name or "-",
-                "Egenskap": prop_name or "-",
-                "Farget": "OK" if colored else "Feilet",
-            })
+                colored = apply_color_to_element(ifc, element, styles_ref, styled_index)
+                tagged_elements.append(element)
 
-            # Update progress
-            pct = 30 + int((len(processed) / total) * 50)
-            progress_bar.progress(pct, text=f"Fargelegger... {len(processed)}/{total}")
+                if colored:
+                    results["colored"] += 1
+                results["total"] += 1
+                results["elements"].append({
+                    "GUID": element.GlobalId,
+                    "Type": element.is_a(),
+                    "Navn": element.Name or "-",
+                    "Egenskap": prop_name or "-",
+                    "Verdi": value if value is not None else "-",
+                    "Farge": color_name,
+                    "Farget": "OK" if colored else "Feilet",
+                })
+
+                # Update progress
+                pct = 30 + int((len(processed) / total) * 50)
+                progress_bar.progress(pct, text=f"Fargelegger... {len(processed)}/{total}")
+
+            # Attach metadata pset to this group's elements via ONE relationship
+            add_shared_pset(ifc, tagged_elements, color_name,
+                            selected_pset, selected_prop, value)
 
         # Override competing colour sources so our colour always wins
         if override_styles:
             progress_bar.progress(80, text="Overstyrer eksisterende farger...")
             override_competing_styles(ifc)
-
-        # Attach metadata pset to all coloured elements via ONE relationship
-        progress_bar.progress(82, text="Legger til egenskaper...")
-        add_shared_pset(ifc, tagged_elements, selected_color,
-                        selected_pset, selected_prop, selected_value)
 
         progress_bar.progress(85, text="Lagrer IFC-fil...")
 
