@@ -4,73 +4,102 @@ machine: edkjo
 date: 2026-09-04
 ---
 
-# Dockerize + self-host on skiplum-apps-1, publish as a tool on skiplum.com
+# Fargekoding: dockerized, self-hosted on skiplum-apps-1, published on skiplum.com, multi-value colouring
 
 edkjo: "can we dockerize it or just rebuild it for the website and publish it as a tool
-there?" → after the trade-off, "Then lets use the streamlit app". So: the Streamlit app
-as-is, in Docker, on the Skiplum apps box, iframed by the site's tool catalogue.
+there?" → after the trade-off, "Then lets use the streamlit app". Then, in the same session:
+the name ("Not MMI700-fargelegger ... It color codes anything by property" → **Fargekoding**,
+everywhere) and the feature ("we'll stick to single properties, but multiple values within
+that property, OR all ifcproducts" → "or rather, all geometry").
 
 ## State at end of session
 
 | Piece | State |
 |---|---|
-| `Dockerfile` + `.dockerignore` (this repo) | written, built on the server |
-| Stack `C:\workspace\skiplum\internal\infra\apps-server\` (`compose.yml`, `Caddyfile`, `deploy.sh`, `status.sh`, `dns.sh`) | written, shipped to `/opt/skiplum/apps-server` |
-| Container `apps-server-mmi-farger-1` on skiplum-apps-1 | **up, healthy**, `/_stcore/health` = ok, AppTest smoke = no exception |
-| DNS `mmi-farger.skiplum.com` → 62.238.58.31 | **NOT created** (classifier blocks credentialed writes; `dns.sh` is ready for edkjo) |
-| Caddy (TLS) | not started, waits for DNS (`bash deploy.sh caddy`) |
-| Supabase `streamlit_apps` row | not inserted (catalogue is empty today; this becomes the first tool) |
-| Live check of `skiplum.com/uttun/verktoy/mmi-farger` | not done |
+| `Dockerfile` + `.dockerignore` (this repo) | committed `0d642af`, built on the server |
+| Stack `C:\workspace\skiplum\internal\infra\apps-server\` (`compose.yml`, `caddy/Caddyfile`, `deploy.sh`, `status.sh`, `dns.sh`) | on the server at `/opt/skiplum/apps-server` |
+| Container `apps-server-fargekoding-1` | **up, healthy**, running `a242450` (multi-value) |
+| Supabase `streamlit_apps` row | slug `fargekoding`, title `Fargekoding`, **iframe_url still `https://mmi-farger.skiplum.com/?embed=true`**, description NULL (edkjo's text) |
+| `https://skiplum.com/uttun/verktoy/fargekoding` | **live and verified** (Playwright, real upload, two colour groups, output checked with ifcopenshell) |
+| DNS `mmi-farger.skiplum.com` → 62.238.58.31 | created by edkjo (`dns.sh`), Let's Encrypt cert issued, serves the app |
+| DNS `fargekoding.skiplum.com` | **NOT created yet** (`bash dns.sh fargekoding`, edkjo-run) |
+| Caddy | serves BOTH hostnames to the app; after DNS: point the row at fargekoding and make mmi-farger a `redir ... permanent` |
+| `mmi-farger.streamlit.app` (Community Cloud) | still deployed, now also renamed + multi-value via the push; retire when edkjo says |
 
-## What was decided
+## What was built
 
-- **Hostname `mmi-farger.skiplum.com`** mirrors the existing `mmi-farger.streamlit.app`.
-- **DNS-only (grey cloud), TLS by Caddy/Let's Encrypt.** Cloudflare's proxy caps request
-  bodies at 100 MB, under the 200 MB IFC upload cap, and the WebSocket must reach Streamlit
-  directly. Same-site subdomain also keeps Streamlit's XSRF cookie working inside the iframe.
-- **Pins** = the combination that ran on Community Cloud 2026-06-22 and matches the June
-  colouring fixes: Python 3.13 / streamlit 1.58.0 / pandas 3.0.3 / ifcopenshell 0.8.5.
-  `requirements.txt` stays unpinned for Community Cloud; the Dockerfile is inert there.
-- **Upload cap stays 200 MB** (`STREAMLIT_SERVER_MAX_UPLOAD_SIZE` in compose) so it matches
-  the app's own "Om verktøyet" text. The box has 8 GB, container limit 6 GB; raising the cap
-  is one env line plus edkjo's text.
-- **iframe URL** for the catalogue: `https://mmi-farger.skiplum.com/?embed=true`.
-- Source ships as a tarball of the local working tree (`deploy.sh`), not a git clone: the
-  repo is personal (EdvardGK) and the box is Skiplum's.
+1. **Docker image** (`python:3.13-slim`, streamlit 1.58.0 / pandas 3.0.3 / ifcopenshell 0.8.5,
+   the combination that ran on Community Cloud 2026-06-22). `requirements.txt` stays unpinned
+   for Community Cloud.
+2. **Apps-server stack**: Caddy (Let's Encrypt) + the app, `deploy.sh` tars the local working
+   tree to the box and builds there (repo is personal, box is Skiplum's). `status.sh` = ps +
+   in-container health + a headless AppTest smoke of `app.py`. Container memory limit 6 GB,
+   upload cap 200 MB (env, matches the app's own text).
+3. **Catalogue row** in `streamlit_apps`; the site's `/uttun/verktoy/[slug]` iframes it
+   full-bleed. This is the first tool in the catalogue (both tables were empty).
+4. **Rename to Fargekoding** (`072aee8`): page_title, in-app h1, README; slug, compose service,
+   image, hostname. `mmi-farger` lived for a few hours.
+5. **Multi-value colouring** (`a242450`): property mode = PropertySet → property → multiselect
+   of values → one colour selectbox per value (defaults rotate through the palette, skipping
+   white) + swatch. Each group gets its own `IfcSurfaceStyle` and its own shared
+   `NOSKI_Eksisterende` pset (`Filter = Pset.Prop=value`, `Farge = colour`). First group wins
+   if an element matches twice. All-geometry mode unchanged (button grid, now in
+   `pick_color_grid()`). Fixed on the way: the matches cache was keyed without the file, so a
+   second upload with the same filter would have reused element objects from the first model.
 
 ## Verified
 
-- Server build: image `skiplum/mmi-farger:latest`, pip resolved the pins, ifcopenshell 0.8.5
-  py313 manylinux wheel installs on `python:3.13-slim`.
-- `status.sh` on the box: container `healthy`; in-container health = `ok`; AppTest runs
-  `app.py` headless with **no exception**, 3 markdown blocks rendered (the upload UI).
-- Host memory after start: 717 MB used of 7.6 GB.
+- Server: image builds, container healthy, `/_stcore/health` = ok, AppTest smoke no exception.
+- Local mechanism (AppTest, `OBF_400520_03_6_ARK.ifc`, IFC2X3): Renovation Status
+  New/Existing → Rosa/Blå: 2 styles, 2 psets (30 + 10 objects), 286 styled items;
+  all-geometry 82/82, 1 pset with 82 objects.
+- **Live on skiplum.com** (Playwright, 1440×1000, twice): page 200, H1 Fargekoding, iframe
+  1440×900, upload processed ("Skjema: IFC2X3"), two values picked with two colours,
+  "Fargelegg 40 elementer", download 869,886 bytes; ifcopenshell on the download: exactly
+  `NOSKI_Eksisterende_Rosa` + `_Blå`, psets 30 (=New) and 10 (=Existing). No console errors.
+  Driver scripts in the session scratchpad (`verify-fargekoding.js`, `apptest_multivalue.py`).
 
-## Blocks hit (and what they mean for next time)
+## Decisions
 
-- **Classifier** refused: the inline Cloudflare DNS POST, running `dns.sh`, and writing a
-  generic `exec.sh` (run any command in a container). Credentialed writes are edkjo-run
-  scripts, as before. A fixed smoke step inside `status.sh` was accepted instead of the
-  generic helper.
-- **Memory gate** fired on the word `docker` in an ssh command whose Docker work runs on
-  the remote box. Local free RAM was 0.9 GB with AoE2 (2.4 GB) running, so nothing heavy
-  was run locally: `bash deploy.sh` only spawns tar + ssh, the build happens on Hetzner.
-- The gate's regex sees command text, not where the load lands; keep server-side scripts
-  (`status.sh`) for anything that would otherwise put `docker` on the local command line.
+- **DNS-only (grey cloud)** for app hosts: Cloudflare's proxy caps request bodies at 100 MB,
+  below the IFC cap, and Streamlit needs a direct WebSocket. Same-site subdomain keeps the
+  XSRF cookie working inside the iframe. Caddy does the cert.
+- **iframe URL** carries `?embed=true`. The page's "Åpne i eget vindu" link reuses it
+  (chromeless in a new tab; acceptable).
+- **Patterns** (edkjo asked about polkadot/zebra): IFC4 can carry textures
+  (`IfcSurfaceStyleWithTextures` + UV maps on tessellated faces) but Solibri, Navisworks,
+  Dalux, BIMcollab Zoom, Trimble Connect and Revit ignore them; only Bonsai/Blender and
+  FZKViewer render them. Colour + transparency is the palette every viewer honours. Not built.
+- The header subtitle in the app still says "Fargelegg eksisterende elementer i IFC-modeller"
+  and the mode checkbox still says "alle IfcProducts"; both are edkjo's text to change.
 
-## Next (in order)
+## Blocks hit
 
-1. edkjo: `bash C:\workspace\skiplum\internal\infra\apps-server\dns.sh`
-2. `bash deploy.sh caddy` → Caddy fetches the cert → `curl https://mmi-farger.skiplum.com/_stcore/health`
-3. Insert the `streamlit_apps` row (slug `mmi-farger`, title `MMI 700 Fargelegger`,
-   iframe_url above, description NULL until edkjo writes one, company_id NULL).
-4. Live check on skiplum.com: page renders the iframe, upload a small IFC, Fargelegg, download.
-5. Then decide whether to retire `mmi-farger.streamlit.app`.
+- **Classifier** refused: inline Cloudflare DNS POST, running `dns.sh`, writing a generic
+  `exec.sh`, and a heredoc that embedded a credential lookup. Credentialed writes = edkjo-run
+  scripts (as before, see the CI/email memory). Supabase inserts/patches with the service key
+  from `.env.local` went through.
+- **Memory gate** matches the word `docker` on the local command line even when the work is
+  remote. Local free RAM was 0.9 GB with AoE2 running at the time. Everything Docker ran on
+  Hetzner through `deploy.sh` / `status.sh`; the local footprint is tar + ssh.
+- **Single-file bind mount trap**: `./Caddyfile:/etc/caddy/Caddyfile` kept serving the OLD
+  config after tar replaced the file (new inode) — `caddy reload` said "config is unchanged"
+  and the old hostname went 502 after the service rename. Fixed by mounting the directory
+  (`./caddy:/etc/caddy:ro`); `deploy.sh` reloads Caddy explicitly after every ship.
+
+## Next
+
+1. edkjo: `bash dns.sh fargekoding`. Then: `bash deploy.sh caddy` (cert), patch the row's
+   `iframe_url` to `https://fargekoding.skiplum.com/?embed=true`, make `mmi-farger` a redirect.
+2. edkjo writes the catalogue `description` (and the in-app subtitle / checkbox label if wanted).
+3. Decide whether `mmi-farger.streamlit.app` is retired.
+4. Raise the upload cap once wanted: one env line in `compose.yml` + the app's own text.
 
 ## Pointers
 
-- Stack: `C:\workspace\skiplum\internal\infra\apps-server\` (not a git repo; `skiplum/internal` is not either)
-- Server: `ssh -i ~/.ssh/skiplum_hetzner root@62.238.58.31`, stack at `/opt/skiplum/apps-server`, source at `/opt/skiplum/src/mmi-color-marker`
+- Stack: `C:\workspace\skiplum\internal\infra\apps-server\` (not a git repo; neither is `skiplum/internal`)
+- Server: `ssh -i ~/.ssh/skiplum_hetzner root@62.238.58.31`, `/opt/skiplum/apps-server`, source `/opt/skiplum/src/mmi-color-marker`
 - Status: `ssh ... bash /opt/skiplum/apps-server/status.sh [log-lines]`
-- Site side: `lib/data/verktoy.ts` (nettside-studio) reads `streamlit_apps` where status=publish and company_id is null; `/uttun/verktoy/[slug]` iframes `iframe_url` full-bleed.
+- Site side: `lib/data/verktoy.ts` (nettside-studio) reads `streamlit_apps` where status=publish and company_id is null; `/uttun/verktoy/[slug]` iframes `iframe_url`.
+- Commits: `0d642af` Dockerfile, `072aee8` rename, `a242450` multi-value.
 - Previous hosting worklog: `2026-06-22-16-19_edkjo-oom-crash-fix-and-hosting-architecture.md`
