@@ -1,5 +1,5 @@
 """
-MMI 700 Fargelegger
+Fargekoding
 
 Marks IFC elements with MMI=700 property to indicate existing elements.
 Adds color and NOSKI_Eksisterende property set.
@@ -383,7 +383,7 @@ def show_results_dialog(data):
 # =============================================================================
 
 def main():
-    st.set_page_config(page_title="MMI 700 Fargelegger", page_icon="🎨", layout="centered")
+    st.set_page_config(page_title="Fargekoding", page_icon="🎨", layout="centered")
 
     # Custom CSS
     st.markdown("""
@@ -439,7 +439,7 @@ def main():
     # Header
     st.markdown("""
     <div class="app-header">
-        <h1>🎨 MMI 700 Fargelegger</h1>
+        <h1>🎨 Fargekoding</h1>
         <p>Fargelegg eksisterende elementer i IFC-modeller</p>
     </div>
     """, unsafe_allow_html=True)

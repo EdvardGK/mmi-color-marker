@@ -1,6 +1,8 @@
-# MMI 700 Fargelegger
+# Fargekoding
 
 Streamlit app for marking IFC elements with metallic colors based on property values.
+(Repo and hostname history: started as "MMI 700 Fargelegger" for marking MMI=700 elements;
+renamed 2026-09-04 since it colour-codes anything by property.)
 
 ## Features
 
@@ -65,7 +67,7 @@ Unusual metallic shades that stand out from typical BIM colors:
 
 - **Streamlit Community Cloud** (`mmi-farger.streamlit.app`) deploys from `requirements.txt`
   on push to `main`. ~1 GB RAM, hence the 200 MB upload cap in `.streamlit/config.toml`.
-- **Self-hosted** (`mmi-farger.skiplum.com`, since 2026-09-04): the `Dockerfile` here, run on
+- **Self-hosted** (`fargekoding.skiplum.com`, since 2026-09-04): the `Dockerfile` here, run on
   skiplum-apps-1 behind Caddy. The stack, deploy and status scripts live in
   `C:\workspace\skiplum\internal\infra\apps-server\` (`bash deploy.sh mmi-farger` ships this
   working tree and rebuilds on the server). Pins in the Dockerfile are the versions the app
