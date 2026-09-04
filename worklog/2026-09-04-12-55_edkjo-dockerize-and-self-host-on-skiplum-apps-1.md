@@ -103,3 +103,24 @@ that property, OR all ifcproducts" → "or rather, all geometry").
 - Site side: `lib/data/verktoy.ts` (nettside-studio) reads `streamlit_apps` where status=publish and company_id is null; `/uttun/verktoy/[slug]` iframes `iframe_url`.
 - Commits: `0d642af` Dockerfile, `072aee8` rename, `a242450` multi-value.
 - Previous hosting worklog: `2026-06-22-16-19_edkjo-oom-crash-fix-and-hosting-architecture.md`
+
+## Addendum, same day: assemblies and "Ingen verdi" (`5c0da78`)
+
+edkjo, after using it live: "the color isnt getting to the assemblies, and also we need to
+let users flag 'no value'. Every object in the model that doesnt have the pset at all or no
+value also need to get their color." Sample: `Downloads/HI90_RIB_farget.ifc` (IFC2X3, 152
+products, 133 with geometry) coloured on all MMI values, 48 left uncoloured. Probe
+(`probe_uncolored.py` in the session scratchpad): 45 had no MMI anywhere; 3 were IfcStair
+parts whose MMI sat on the aggregating IfcStair. No values on types in this file.
+
+- `build_effective_values(ifc, pset, prop)` replaces `find_elements_by_property`: own value,
+  else the nearest aggregating parent's (`Decomposes` → `RelatingObject`, memoised), else
+  None. Empty string = no value.
+- Synthetic option `NO_VALUE` (label reuses the app's "Ingen verdi") = geometry-bearing
+  products with effective None. Real-value groups = all products with that effective value.
+- Verified headless: HI90 all values + Ingen verdi → button "Fargelegg 136 elementer",
+  probe on the output: 0 uncoloured. ARK sample: New group 30 → 72 (wall parts inherit
+  Renovation Status from the wall).
+- Verified live on skiplum.com (Playwright, same file): 0 uncoloured, no console errors.
+- Not done: inheriting values from the element TYPE's psets (Revit often puts psets on
+  types). No case in the samples; add when one shows up.
